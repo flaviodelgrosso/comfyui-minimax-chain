@@ -1,12 +1,12 @@
 # ComfyUI MiniMax H3 Chain
 
-A ComfyUI node that chains [MiniMax H3](https://www.minimax.io/blog/minimax-h3) image-to-video clips into one long video:
+A ComfyUI node that chains [MiniMax H3](https://www.minimax.io/blog/minimax-h3) clips into one long video:
 
 ```
-start image → clip 1 → last frame → clip 2 → last frame → … → clip N → merged video
+start image (optional) → clip 1 → last frame → clip 2 → last frame → … → clip N → merged video
 ```
 
-You write one prompt per clip. The node generates the clips one after another, each starting from the last frame of the previous clip. It saves every clip and every last frame, and returns the merged video with audio.
+You write one prompt per clip. The node generates the clips one after another, each starting from the last frame of the previous clip. Without a start image, clip 1 is generated from text only (text-to-video). It saves every clip and every last frame, and returns the merged video with audio.
 
 ![Example workflow](docs/workflow.png)
 
@@ -41,12 +41,12 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/flaviodelgrosso/comfyui-minimax-chain.git
 ```
 
-Restart ComfyUI. The node appears as **MiniMax H3 Chain Image to Video** in the `video/minimax` category.
+Restart ComfyUI. The node appears as **MiniMax H3 Chain Video** in the `video/minimax` category.
 
 ## Quick start
 
 1. Open `example_workflows/minimax_h3_chain.json`: drag it onto the canvas, or find it under **Templates** in the custom node examples.
-2. Pick a start image in **Start image** and the size in **Resolution Selector**.
+2. Pick a start image in **Start image** (or remove it for text-to-video) and the size in **Resolution Selector**.
 3. Write your prompts in **prompts**, one per clip, separated by a line containing only `---`.
 4. Press **Run**.
 
@@ -94,7 +94,7 @@ Do not combine EasyCache or Spectrum with Parasyte: the MacMax authors report vi
 | Input                                                | Description                                                                                                                                                                      |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `model`, `clip`, `vae`, `audio_vae`                  | MiniMax H3 diffusion model (optionally through the turbo LoRA), text encoder (`CLIPLoader` type `minimax`), video VAE and audio VAE                                              |
-| `start_image`                                        | First frame of clip 1                                                                                                                                                            |
+| `start_image`                                        | Optional first frame of clip 1. Leave empty to generate clip 1 from text only                                                                                                    |
 | `prompts`                                            | One prompt per clip, separated by `---` lines                                                                                                                                    |
 | `style`                                              | Text appended to every prompt (look, camera, audio)                                                                                                                              |
 | `num_clips`                                          | Number of clips; `0` = one clip per prompt. Fewer prompts than clips repeats the last prompt; extra prompts are ignored. A warning is logged in both cases.                      |
@@ -120,7 +120,7 @@ Over many clips, faces and details slowly drift. With `reanchor_every = K`:
 - **`target`** (default): clips K, 2K, … are generated with the reference image as their last frame. The chain returns smoothly to the reference with no cut.
 - **`replace`**: clips K+1, 2K+1, … start from the reference image instead of the previous last frame. This gives a hard cut, so those clips keep their first frame in the merge.
 
-`reference_image` defaults to `start_image`.
+`reference_image` defaults to `start_image`, or to the last frame of clip 1 when there is no start image.
 
 Each clip starts from a generated, VAE-decoded frame, so colors, contrast and skin texture degrade a little at every hop. Two settings counter this:
 

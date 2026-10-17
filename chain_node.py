@@ -1,6 +1,6 @@
 """MiniMax H3 clip chaining node.
 
-start image -> clip 1 -> last frame -> clip 2 -> ... -> clip N -> merged video, inside one node.
+[start image ->] clip 1 -> last frame -> clip 2 -> ... -> clip N -> merged video, inside one node.
 
 Each clip is generated like the official MiniMax H3 image-to-video template (MiniMaxH3ImageToVideo ->
 BasicGuider -> SamplerCustomAdvanced -> VAE decode video + audio) and written to
@@ -77,17 +77,18 @@ class MiniMaxH3ChainVideo(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="MiniMaxH3ChainVideo",
-            display_name="MiniMax H3 Chain Image to Video",
+            display_name="MiniMax H3 Chain Video",
             category="video/minimax",
             description="Generates N consecutive MiniMax H3 clips, each starting from the last frame of the previous one, "
                         "saves every clip and last frame to output/minimax_chain/<run_name>/ and returns the merged video. "
+                        "Without a start image the first clip is text-to-video. "
                         "Finished clips are cached on disk: re-running only regenerates clips whose inputs changed.",
             inputs=[
                 io.Model.Input("model"),
                 io.Clip.Input("clip"),
                 io.Vae.Input("vae", tooltip="MiniMax H3 video VAE."),
                 io.Vae.Input("audio_vae", tooltip="MiniMax H3 audio VAE."),
-                io.Image.Input("start_image"),
+                io.Image.Input("start_image", optional=True, tooltip="First frame of clip 1. Leave empty to generate clip 1 from text only."),
                 io.String.Input("prompts", multiline=True,
                                 tooltip="One prompt per clip, separated by a line containing only ---"),
                 io.String.Input("style", multiline=True, default="", tooltip="Appended to every prompt."),
@@ -113,16 +114,17 @@ class MiniMaxH3ChainVideo(io.ComfyNode):
                 io.Float.Input("color_match", default=0.0, min=0.0, max=1.0, step=0.05,
                                tooltip="Match the colors (hue and saturation, not brightness or contrast) of each chained start frame "
                                        "to the reference image before generating the next clip. Counters skin-tone and color drift across clips. 0 = off."),
-                io.Image.Input("reference_image", optional=True, tooltip="Anti-drift reference (default: start_image)."),
+                io.Image.Input("reference_image", optional=True,
+                               tooltip="Anti-drift reference (default: start_image, or clip 1's last frame without a start image)."),
             ],
             outputs=[io.Video.Output(tooltip="All clips merged, without the duplicated frame at each seam.")],
             is_output_node=True,
         )
 
     @classmethod
-    def execute(cls, model, clip, vae, audio_vae, start_image, prompts, style, num_clips, duration, width, height,
+    def execute(cls, model, clip, vae, audio_vae, prompts, style, num_clips, duration, width, height,
                 seed, vary_seed, steps, sampler_name, scheduler, reanchor_every, reanchor_mode, run_name, redo_from,
-                color_match, reference_image=None) -> io.NodeOutput:
+                color_match, start_image=None, reference_image=None) -> io.NodeOutput:
         if not RUN_NAME.match(run_name):
             raise ValueError(f"run_name '{run_name}' may only contain letters, digits, - and _")
         prompt_list = split_prompts(prompts)
@@ -146,17 +148,19 @@ class MiniMaxH3ChainVideo(io.ComfyNode):
                 manifest = json.load(f)
 
         length = max(5, round(duration * FPS))  # MiniMaxH3ImageToVideo snaps this up to 17k+5
-        reference = (reference_image if reference_image is not None else start_image)[:1]
+        reference = reference_image if reference_image is not None else start_image
+        if reference is not None:
+            reference = reference[:1]
         sampler = comfy.samplers.sampler_object(sampler_name)
         sigmas = comfy.samplers.calculate_sigmas(model.get_model_object("model_sampling"), scheduler, steps).cpu()
         pbar = comfy.utils.ProgressBar(n)
 
-        prev_last = start_image[:1]
+        prev_last = start_image[:1] if start_image is not None else None
         videos = []
         for i in range(1, n + 1):
             reanchor = reanchor_every and i > 1 and (i - 1) % reanchor_every == 0 and reanchor_mode == "replace"
             first = reference if reanchor else prev_last
-            target = reference if reanchor_every and reanchor_mode == "target" and i % reanchor_every == 0 else None
+            target = reference if reference is not None and reanchor_every and reanchor_mode == "target" and i % reanchor_every == 0 else None
             prompt = prompt_list[i - 1] + suffix
             clip_seed = seed + i - 1 if vary_seed else seed
             video_path = os.path.join(run_dir, f"clip_{i:03d}.mp4")
@@ -164,7 +168,7 @@ class MiniMaxH3ChainVideo(io.ComfyNode):
 
             matched = color_match if i > 1 and not reanchor else 0.0
             key_parts = [prompt, clip_seed, steps, sampler_name, scheduler, width, height, length,
-                         tensor_hash(first), tensor_hash(target) if target is not None else None]
+                         tensor_hash(first) if first is not None else None, tensor_hash(target) if target is not None else None]
             if matched:
                 key_parts.append(["chroma", matched])
             key = hashlib.sha256(json.dumps(key_parts).encode()).hexdigest()
@@ -188,7 +192,7 @@ class MiniMaxH3ChainVideo(io.ComfyNode):
                 video.save_to(video_path, format=Types.VideoContainer.MP4, codec=Types.VideoCodec.H264)
                 save_png(images[-1:], last_path)
                 manifest["clips"][str(i)] = {"key": key, "seed": clip_seed, "prompt": prompt,
-                                             "first_frame": "start" if i == 1 else ("anchor" if reanchor else "previous")}
+                                             "first_frame": ("start" if first is not None else "text") if i == 1 else ("anchor" if reanchor else "previous")}
                 with open(manifest_path, "w", encoding="utf-8") as f:
                     json.dump(manifest, f, indent=2, ensure_ascii=False)
                 del images, audio, samples, latent, cond, video
@@ -199,6 +203,9 @@ class MiniMaxH3ChainVideo(io.ComfyNode):
                 clip_video = clip_video.as_trimmed(1 / FPS, 0, strict_duration=False)
             videos.append(clip_video)
             prev_last = load_png(last_path)
+            if reference is None:
+                # Text-to-video start: anchor the rest of the chain to the first clip's last frame.
+                reference = prev_last
             pbar.update(1)
 
         final_name = "final.mp4"

@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-minimax-chain"
-description = "Chain MiniMax H3 image-to-video clips into one long video: each clip starts from the last frame of the previous one, with one prompt per clip, a disk cache to regenerate single clips, anti-drift re-anchoring and a merged output video."
+description = "Chain MiniMax H3 clips into one long video: an optional start image or text-to-video first clip, then each clip starts from the last frame of the previous one, with one prompt per clip, a disk cache to regenerate single clips, anti-drift re-anchoring and a merged output video."
 version = "1.2.0"
 license = { file = "LICENSE" }
 dependencies = []
